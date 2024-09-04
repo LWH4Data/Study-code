@@ -1,0 +1,126 @@
+# libraries
+# preprocessing
+library(dplyr)
+library(readr)
+
+# modeling
+library(caret) 
+library(pROC) # ROC-AUC 평가지표
+
+# 데이터 불러오기---------------------------------------------------------------------------
+df <- read_csv("https://www.kaggle.com/competitions/playground-series-s4e1/data?select=train.csv <<< 해당 링크의 train.csv")
+df <- df %>% 
+  mutate(across(where(is.character), as.factor))
+str(df)
+
+# 전처리-----------------------------------------------------------------------------------
+# 이전 실습에서 선형성 가정을 위배하는 컬럼과 유의하지 않은 컬럼 제거
+df <- df %>%
+  select(-c("id", "CustomerId", "Surname", "Age", "Balance", "EstimatedSalary", "Geography"))
+str(df)
+
+# 나머지 범주형이면서 연속형인 변수를 범주형 변수로 변환
+df$NumOfProducts <- as.factor(df$NumOfProducts)
+df$HasCrCard <- as.factor(df$HasCrCard)
+df$IsActiveMember <- as.factor(df$IsActiveMember)
+df$Exited <- as.factor(df$Exited)
+str(df)
+
+# caret을 통해 예측할 때 결과변수는 숫자가 아니라 변수명을 가져야 한다.
+# caret에서 glm()을 적용하면 변수명으로 결과가 반환 되기 때문.
+# (단순히 범주명만 변경할 것이 아니라 level명을 변경한다).
+df$Exited <- factor(df$Exited, levels = c(0, 1), labels = c("No", "Yes"))
+levels(df$Exited) <- make.names(levels(df$Exited))
+
+# 데이터 분할--------------------------------------------------------------------------------
+# 결과변수를 기준으로 데이터 분할 train : dev (7 : 2)
+set.seed(123)
+train_index = createDataPartition(df$Exited, p = 0.7, list = FALSE)
+
+# train set
+df_train <- df[train_index, ]
+df_dev <- df[-train_index, ]
+summary(df_train)
+summary(df_dev)
+
+# scaling-------------------------------------------------------------------------------------
+# scaling preProcess 객체 생성
+pre_proc <- preProcess(df_train, method = "scale")
+
+# Train set에 적용
+df_train <- predict(pre_proc, newdata = df_train)
+summary(df_train)
+
+# Dev set에 적용
+df_dev <- predict(pre_proc, newdata = df_dev)
+summary(df_dev)
+
+# 교차 검증 세팅----------------------------------------------------------------------------
+train_control <- trainControl(
+  method = "cv", # 교차검증 방법
+  number = 5, # 총 수
+  summaryFunction = twoClassSummary, # 평가 지표
+  classProbs = TRUE # 확률 추정 설정
+)
+
+# 로지스틱 회귀 훈련-------------------------------------------------------------------------
+logit_m <- train(
+  Exited ~ .,
+  data = df_train,
+  method = "glm",
+  family = "binomial",
+  trControl = train_control,
+  metric = "ROC"
+)
+
+summary(logit_m)
+
+# 예측 수행----------------------------------------------------------------------------------
+Pred1 <- predict(logit_m, newdata = df_dev)
+summary(Pred1)
+confusionMatrix(Pred1, df_dev$Exited)
+
+# 결과 평가----------------------------------------------------------------------------------
+calculate_metrics <- function(predictions, actuals) {
+  # 혼동 행렬 생성
+  cm <- confusionMatrix(predictions, actuals)
+  
+  # 혼동 행렬에서 TP, FP, TN, FN 값 추출
+  TP <- cm$table["Yes", "Yes"]
+  FP <- cm$table["No", "Yes"]
+  TN <- cm$table["No", "No"]
+  FN <- cm$table["Yes", "No"]
+  
+  # Accuracy 계산
+  accuracy <- (TP + TN) / (TP + TN + FP + FN)
+  
+  # Precision 계산
+  precision <- TP / (TP + FP)
+  
+  # Recall (Sensitivity) 계산
+  recall <- TP / (TP + FN)
+  
+  # F1 Score 계산
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  
+  # 결과 출력
+  cat("Accuracy: ", accuracy, "\n")
+  cat("Precision: ", precision, "\n")
+  cat("Recall (Sensitivity): ", recall, "\n")
+  cat("F1 Score: ", f1_score, "\n")
+}
+calculate_metrics(Pred1, df_dev$Exited)
+
+# ROC - AUC로 예측성능 확인--------------------------------------------------------------------
+# 예측 (확률 반환)
+predictions_prob <- predict(logit_m, newdata = df_dev, type = "prob")
+
+# ROC Curve와 AUC 계산
+roc_curve <- roc(df_dev$Exited, predictions_prob[, "Yes"])
+auc_value <- auc(roc_curve)
+
+# ROC Curve 플롯
+plot(roc_curve, main = paste("ROC Curve (AUC =", round(auc_value, 2), ")"))
+
+# AUC 출력
+cat("AUC: ", auc_value, "\n")
