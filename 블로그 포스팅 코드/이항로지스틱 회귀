@@ -1,0 +1,103 @@
+# preprocessing
+library(readr)
+library(dplyr)
+library(purrr)
+library(car)
+
+library(ggplot2)
+
+
+# 데이터 불러오기------------------------------------------------------------------------------
+df <- read_csv("https://www.kaggle.com/competitions/playground-series-s4e1/data?select=train.csv <<< 해당 링크 train.csv")
+df <- df %>% 
+  mutate(across(where(is.character), as.factor))
+df$HasCrCard <- as.factor(df$HasCrCard)
+df$IsActiveMember <- as.factor(df$IsActiveMember)
+df$NumOfProducts <- as.factor(df$NumOfProducts)
+df$Exited <- as.factor(df$Exited)
+str(df)
+
+# id, Surname, CustomerId 컬럼 드롭
+# 의미가 있을 수 있지만 일반적으로 고유한 값을 갖기에 실습에서 제외한다.
+df <- df %>% 
+  select(-c("id", "Surname", "CustomerId"))
+summary(df)
+
+# 선형성 검사---------------------------------------------------------------------------
+df$logCreditScore <- df$CreditScore * log(df$CreditScore + 1)
+df$logAge <- df$Age * log(df$Age + 1)
+df$logTenure <- df$Tenure * log(df$Tenure + 1)
+df$logBalance <- df$Balance * log(df$Balance + 1)
+df$logEstimatedSalary <- df$EstimatedSalary * log(df$EstimatedSalary + 1)
+logit_m <- glm(Exited ~ ., data = df, family = "binomial")
+summary(logit_m)
+
+# 실습과정이기에 선형성을 만족하지 못하는 변수 (Age, Balance, EstimatedSalary)를 제거.
+df <- df %>% 
+  select(-c("Age", "Balance", "EstimatedSalary", "logCreditScore", "logAge", "logTenure", "logBalance", "logEstimatedSalary"))
+
+# 데이터 전처리-------------------------------------------------------------------------
+# 연속형 변수 표준화
+df_num <- df %>% 
+  select(where(is.numeric))
+df_num <- scale(df_num)
+
+# 범주형 변수의 기저범주 확인
+df_cat <- df %>% 
+  select(where(is.factor))
+contrasts_list <- map(df_cat, ~ contrasts(.x))
+contrasts_list
+
+# 나뉘어진 두 데이터 프레임 결합
+df <- cbind(df_num, df_cat)
+str(df)
+
+# 로지스틱 회귀 모델링------------------------------------------------------------------
+logit_m <- glm(Exited ~ ., data = df, family = "binomial")
+summary(logit_m)
+
+# Sample들의 확률값 반환----------------------------------------------------------------
+head(fitted(logit_m), 30)
+
+# 회귀 계수들을 오즈비 반환-------------------------------------------------------------
+exp(logit_m$coefficients)
+
+# 적합도 평가. (두 이탈도의 차이는 카이제곱분포를 따른다).------------------------------
+# 결과적으로 기저 모형보다 유의하게 예측을 잘 한다.
+# 기저모형과 차이가 없다는 귀무가설을 기각한다.
+logitChi <- logit_m$null.deviance - logit_m$deviance
+logitChi
+chidf <- logit_m$df.null - logit_m$df.residual
+chidf
+chisq.prob <- 1 - pchisq(logitChi, chidf)
+chisq.prob
+
+# 기타 평가지표 확인--------------------------------------------------------------------
+# 평가 지표 함수
+logisticPseudoR2s <- function(LogModel) {
+  dev <- LogModel$deviance
+  nullDev <- LogModel$null.deviance
+  modelN <- length(LogModel$fitted.values)
+  # 호머트 램쇼
+  R.l <- 1 - dev / nullDev
+  # 콕스-스넬
+  R.cs <- 1 - exp( - (nullDev - dev) / modelN)
+  # 네이글커크
+  R.n <- R.cs / ( 1 - ( exp (- ( nullDev / modelN ))))
+  cat("Pseudo R^2 for logistic regression\n")
+  cat("Hosmer and Lemeshow R^2   ", round(R.l, 3), "\n")
+  cat("Cox and Snell R^2         ", round(R.cs, 3), "\n")
+  cat("Nagelkerke R^2            ", round(R.n, 3),   "\n")
+}
+logisticPseudoR2s(logit_m)
+
+# 가정 확인 2---------------------------------------------------------------------------
+# 다중공선성
+vif(logit_m)
+1/vif(logit_m)
+
+# 잔차 분석 <<< sample이 적을 때에는 직접 잔차를 분석할 수도 있다.
+# (잔차 분석의 목적은 일반적이지 않은 관측치를 격리는 하것이다. 이상치 처리와 유사하다.)
+standardized.residuals <- rstandard(logit_m)
+dfbeta <- dfbeta(logit_m)
+leverage <- hatvalues(logit_m)
